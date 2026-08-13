@@ -20,7 +20,7 @@ async function api(path, options = {}) {
 }
 
 const boxStyle = { border: '1px solid #ccc', borderRadius: 8, padding: 16, marginBottom: 12, listStyle: 'none' };
-const preStyle = { background: '#f6f6f6', padding: 8, margin: '4px 0', overflowX: 'auto' };
+const preStyle = { background: '#f6f6f6', padding: 8, margin: '4px 0', overflowX: 'auto', fontSize: 12 };
 const rowStyle = { border: '1px solid #ccc', borderRadius: 6, padding: '8px 12px', marginBottom: 6, listStyle: 'none' };
 const metaStyle = { color: '#666', fontSize: 13, margin: '2px 0' };
 // Listings are namespace-wide, so items from other integrations sharing the
@@ -80,6 +80,38 @@ function decodeStartInput(events) {
   }
 }
 
+// Activity types carry a "workflow-<workflowType>." routing prefix in Temporal
+// history; show just the function name.
+function shortName(name) {
+  const parts = (name || '').split('.');
+  return parts[parts.length - 1];
+}
+
+function ActivityNode({ node }) {
+  const failed = node.status === 'FAILED' || node.status === 'TIMED_OUT';
+  return (
+    <li style={{ listStyle: 'none' }}>
+      <details style={rowStyle}>
+        <summary style={{ cursor: 'pointer' }}>
+          <strong>{shortName(node.name)}</strong>
+          {' — '}
+          <span style={{ color: failed ? 'red' : 'inherit' }}>{node.status}</span>
+          <span style={{ color: '#888', fontSize: 12 }}>
+            {node.type !== 'ACTIVITY' ? ` · ${node.type}` : ''}
+            {node.startTime ? ` · started ${node.startTime}` : ''}
+          </span>
+        </summary>
+        <div style={{ marginTop: 6 }}>
+          <div style={metaStyle}>{node.name}{node.attempt > 1 ? ` · attempt ${node.attempt}` : ''}</div>
+          {node.failure && <p style={{ color: 'red', margin: '4px 0' }}>{node.failure.message}</p>}
+          Input: <Json value={node.input} />
+          Output: <Json value={node.output} />
+        </div>
+      </details>
+    </li>
+  );
+}
+
 function WorkflowDetail({ workflow, onBack }) {
   const [status, setStatus] = useState(workflow.status);
   const [input, setInput] = useState(null);
@@ -114,23 +146,18 @@ function WorkflowDetail({ workflow, onBack }) {
     <div>
       <button onClick={onBack}>&larr; Back to workflows</button>
       {error && <p style={{ color: 'red' }}>{error}</p>}
-      <div style={boxStyle}>
+      <div style={rowStyle}>
         <strong>{workflow.workflowType}</strong> — {status}
-        <p>ID: {workflow.workflowId}<br />Started: {workflow.startTime}</p>
-        Input: <Json value={input} />
+        <div style={metaStyle}>{workflow.workflowId} · started {workflow.startTime}</div>
+        <details open>
+          <summary style={{ cursor: 'pointer' }}>Input</summary>
+          <Json value={input} />
+        </details>
       </div>
       <h3>Activities</h3>
       {activities.length === 0 && <p>No activities recorded yet.</p>}
       <ul style={{ padding: 0 }}>
-        {activities.map((a) => (
-          <li key={a.id} style={boxStyle}>
-            <strong>{a.name}</strong> — {a.status}
-            <p>Started: {a.startTime || '-'}</p>
-            {a.failure && <p style={{ color: 'red' }}>{a.failure.message}</p>}
-            Input: <Json value={a.input} />
-            Output: <Json value={a.output} />
-          </li>
-        ))}
+        {activities.map((a) => <ActivityNode key={a.id} node={a} />)}
       </ul>
     </div>
   );
