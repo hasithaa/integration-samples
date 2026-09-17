@@ -7,7 +7,7 @@ import React, { useEffect, useState } from 'react';
 const HEADERS = {
   'Content-Type': 'application/json',
   'x-user-id': 'admin',
-  'x-user-roles': 'MANAGER,OPS',
+  'x-user-roles': 'MANAGER,OPS,CLAIMS_ADMIN,OPS_LEAD',
 };
 
 async function api(path, options = {}) {
@@ -54,6 +54,84 @@ function Json({ value }) {
 function taskWorkflowType(task) {
   const type = task.parentWorkflowType || (task.taskName || '').split('.')[0];
   return type.replace(/^workflow-/, '');
+}
+
+const list = (v) => (v && v.length ? v.join(', ') : null);
+
+// A task names who may decide it (userRoles / users, minus the exclusions) and who
+// administers it (administratorRoles / administratorUsers). The server answers both
+// questions for the calling identity in canComplete and canAdminister.
+function Audience({ task }) {
+  return (
+    <p style={metaStyle}>
+      {list(task.userRoles) && <>Roles: {list(task.userRoles)} </>}
+      {list(task.users) && <>Users: {list(task.users)} </>}
+      {list(task.excludedRoles) && <>Excluded roles: {list(task.excludedRoles)} </>}
+      {list(task.excludedUsers) && <>Excluded users: {list(task.excludedUsers)} </>}
+      {(list(task.administratorRoles) || list(task.administratorUsers)) && (
+        <>Administered by: {[list(task.administratorRoles), list(task.administratorUsers)].filter(Boolean).join(', ')} </>
+      )}
+      {task.kind === 'HUMAN_TASK' && task.canAdminister && <strong>you administer this task</strong>}
+      {task.kind === 'HUMAN_TASK' && !task.canComplete && !task.canAdminister && (
+        <em>you may not act on this task</em>
+      )}
+    </p>
+  );
+}
+
+// Administrator actions. An administrator does not decide the task on the owner's
+// behalf by default — it hands the task to someone else, or moves its deadline.
+function AdminActions({ task, active, onDone }) {
+  const [roles, setRoles] = useState('');
+  const [hours, setHours] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const id = encodeURIComponent(task.taskId);
+
+  const act = async (fn) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      onDone();
+    } catch (e) {
+      setError(e.message);
+      setBusy(false);
+    }
+  };
+
+  const reassign = () => act(() => api(`/human-tasks/${id}/reassign`, {
+    method: 'POST',
+    body: JSON.stringify({ userRoles: roles.split(',').map((r) => r.trim()).filter(Boolean) }),
+  }));
+  // An empty value clears the deadline, so the task waits indefinitely.
+  const setDeadline = () => act(() => api(`/human-tasks/${id}/deadline`, {
+    method: 'POST',
+    body: JSON.stringify({ timeoutMillis: hours === '' ? null : Number(hours) * 3600000 }),
+  }));
+
+  return (
+    <fieldset style={{ border: '1px dashed #999', borderRadius: 6, marginTop: 8, fontSize: 13 }}>
+      <legend>Administer</legend>
+      <input
+        placeholder="Reassign to roles, e.g. SENIOR_MANAGER"
+        value={roles}
+        onChange={(e) => setRoles(e.target.value)}
+        style={{ width: '45%', marginRight: 8 }}
+        disabled={!active}
+      />
+      <button disabled={busy || !active || !roles.trim()} onClick={reassign}>Reassign</button>{' '}
+      <input
+        placeholder="Deadline in hours"
+        value={hours}
+        onChange={(e) => setHours(e.target.value)}
+        style={{ width: 120, marginRight: 8 }}
+        disabled={!active}
+      />
+      <button disabled={busy || !active} onClick={setDeadline}>Set deadline</button>
+      {error && <p style={{ color: 'red' }}>{error}</p>}
+    </fieldset>
+  );
 }
 
 function InactiveNote({ taskQueue }) {
@@ -234,17 +312,19 @@ function HumanTask({ task, active, onDone }) {
     <li style={active ? boxStyle : inactiveStyle}>
       <strong>{task.title || task.taskName}</strong>
       <p>{task.description}</p>
-      <Json value={task.payload} />
+      <Json value={task.taskInput} />
+      <Audience task={task} />
       {!active && <InactiveNote taskQueue={task.taskQueue} />}
       <input
         placeholder="Comment"
         value={comment}
         onChange={(e) => setComment(e.target.value)}
         style={{ width: '60%', marginRight: 8 }}
-        disabled={!active}
+        disabled={!active || !task.canComplete}
       />
-      <button disabled={busy || !active} onClick={() => decide(true)}>Approve</button>{' '}
-      <button disabled={busy || !active} onClick={() => decide(false)}>Reject</button>
+      <button disabled={busy || !active || !task.canComplete} onClick={() => decide(true)}>Approve</button>{' '}
+      <button disabled={busy || !active || !task.canComplete} onClick={() => decide(false)}>Reject</button>
+      {task.canAdminister && <AdminActions task={task} active={active} onDone={onDone} />}
       {error && <p style={{ color: 'red' }}>{error}</p>}
     </li>
   );
@@ -294,7 +374,7 @@ function HumanTasks({ activeTypes, showInactive }) {
 // ── Failed activities (review) ───────────────────────────────────────────────
 
 function FailedActivity({ task, active, onDone }) {
-  const [inputJson, setInputJson] = useState(JSON.stringify(task.activityArgs || {}, null, 2));
+  const [inputJson, setInputJson] = useState(JSON.stringify(task.taskInput || {}, null, 2));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -326,6 +406,7 @@ function FailedActivity({ task, active, onDone }) {
       <strong>{task.activityName || task.taskName}</strong>
       <p>Workflow: {task.parentWorkflowId}</p>
       <p style={{ color: 'red' }}>{task.errorMessage}</p>
+      <Audience task={task} />
       {!active && <InactiveNote taskQueue={task.taskQueue} />}
       <label>
         Activity input (edit to retry with corrected values):
